@@ -1,0 +1,65 @@
+name: LR3 - Optimized 2 shards with pip cache
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-shards:
+    name: Test shard ${{ matrix.shard }}/2
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    env:
+      PYTEST_DEMO_DELAY: "0.20"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python with pip cache
+        id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Report cache status
+        run: |
+          mkdir -p reports
+          echo "setup-python cache-hit: ${{ steps.python.outputs.cache-hit }}" | tee reports/cache.txt
+          python --version
+          echo "Runner OS: $RUNNER_OS"
+
+      - name: Install dependencies and measure time
+        run: |
+          start=$(date +%s)
+          python -m pip install -r requirements.txt
+          elapsed=$(($(date +%s) - start))
+          echo "Install seconds: $elapsed" | tee reports/install-time.txt
+          echo "Installation: ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run selected shard and measure time
+        run: |
+          start=$(date +%s)
+          python -m pytest -q tests/ \
+            --total-shards 2 \
+            --shard-index ${{ matrix.shard }} \
+            --junitxml=reports/junit-shard-${{ matrix.shard }}.xml
+          elapsed=$(($(date +%s) - start))
+          echo "Tests seconds: $elapsed" | tee reports/test-time.txt
+          echo "Shard ${{ matrix.shard }}: ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload shard report and timing
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.shard }}-report
+          path: reports/
+          if-no-files-found: warn
