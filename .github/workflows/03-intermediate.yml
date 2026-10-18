@@ -1,0 +1,131 @@
+name: LR3 - Intermediate matrix 4 shards (3 caches)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cache_mode:
+        description: "Select one of the three cache configurations"
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - pip
+          - wheelhouse
+
+permissions:
+  contents: read
+
+jobs:
+  matrix-tests:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }} / shard ${{ matrix.shard }}/4 / ${{ inputs.cache_mode }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        os: [ubuntu, alpine]
+        python-version: ["3.9", "3.11", "3.12"]
+        shard: [1, 2, 3, 4]
+
+    steps:
+      - name: Get project source
+        uses: actions/checkout@v4
+
+      - name: Set up Python for Ubuntu
+        if: matrix.os == 'ubuntu'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Prepare empty cache and report folders
+        shell: bash
+        run: mkdir -p .ci_cache/pip .ci_cache/wheels reports
+
+      - name: Restore pip download cache
+        id: pip-cache
+        if: inputs.cache_mode == 'pip'
+        uses: actions/cache@v4
+        with:
+          path: .ci_cache/pip
+          key: lr3-v2-pip-${{ matrix.os }}-py${{ matrix.python-version }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Restore pre-downloaded wheelhouse
+        id: wheel-cache
+        if: inputs.cache_mode == 'wheelhouse'
+        uses: actions/cache@v4
+        with:
+          path: .ci_cache/wheels
+          key: lr3-v2-wheel-${{ matrix.os }}-py${{ matrix.python-version }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Install and run four-way shard on Ubuntu
+        if: matrix.os == 'ubuntu'
+        shell: bash
+        env:
+          CACHE_MODE: ${{ inputs.cache_mode }}
+          CACHE_HIT: ${{ steps.pip-cache.outputs.cache-hit || steps.wheel-cache.outputs.cache-hit || 'false' }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_PYTHON: ${{ matrix.python-version }}
+          SHARD_INDEX: ${{ matrix.shard }}
+          PYTEST_DEMO_DELAY: "0.20"
+        run: python scripts/ci_measure.py
+
+      # GitHub does not provide an Alpine hosted runner. Docker executes actual Alpine Linux
+      - name: Install and run four-way shard in Alpine container
+        if: matrix.os == 'alpine'
+        shell: bash
+        env:
+          CACHE_MODE: ${{ inputs.cache_mode }}
+          CACHE_HIT: ${{ steps.pip-cache.outputs.cache-hit || steps.wheel-cache.outputs.cache-hit || 'false' }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_PYTHON: ${{ matrix.python-version }}
+          SHARD_INDEX: ${{ matrix.shard }}
+          PYTEST_DEMO_DELAY: "0.20"
+        run: |
+          docker run --rm \
+            --volume "${{ github.workspace }}:/workspace" \
+            --workdir /workspace \
+            --env CACHE_MODE --env CACHE_HIT \
+            --env MATRIX_OS --env MATRIX_PYTHON \
+            --env SHARD_INDEX --env PYTEST_DEMO_DELAY \
+            python:${{ matrix.python-version }}-alpine \
+            python scripts/ci_measure.py
+
+      - name: Publish JUnit XML and measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: medium-${{ inputs.cache_mode }}-${{ matrix.os }}-py${{ matrix.python-version }}-s${{ matrix.shard }}
+          path: reports/
+          retention-days: 7
+          if-no-files-found: warn
+
+  summary:
+    name: Aggregate 24 test results
+    needs: [matrix-tests]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Get repository
+        uses: actions/checkout@v4
+
+      - name: Download all 24 job artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: medium-${{ inputs.cache_mode }}-*
+          path: collected-reports
+          merge-multiple: true
+
+      - name: Aggregate results, output report, check completeness
+        shell: bash
+        run: python scripts/aggregate_metrics.py collected-reports
+
+      - name: Upload aggregated CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-${{ inputs.cache_mode }}
+          path: collected-reports/summary.csv
+          if-no-files-found: warn
+          retention-days: 7
