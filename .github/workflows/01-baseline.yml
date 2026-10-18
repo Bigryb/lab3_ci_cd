@@ -1,0 +1,49 @@
+name: LR3 - Baseline no cache
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-all:
+    name: All 240 tests sequentially
+    runs-on: ubuntu-24.04
+    env:
+      PYTEST_DEMO_DELAY: "0.20"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python 3.11 (without pip cache)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Show environment
+        run: |
+          python --version
+          python -m pip --version
+          echo "Runner OS: $RUNNER_OS"
+      - name: Install dependencies and measure time
+        run: |
+          mkdir -p reports
+          start=$(date +%s)
+          python -m pip install -r requirements.txt
+          elapsed=$(($(date +%s) - start))
+          echo "Install seconds: $elapsed" | tee reports/install-time.txt
+          echo "Installation: ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"
+      - name: Run all tests and measure time
+        run: |
+          start=$(date +%s)
+          python -m pytest -q tests/ --junitxml=reports/junit-baseline.xml
+          elapsed=$(($(date +%s) - start))
+          echo "Tests seconds: $elapsed" | tee reports/test-time.txt
+          echo "Tests: ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload report and timing
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-report
+          path: reports/
+          if-no-files-found: warn
